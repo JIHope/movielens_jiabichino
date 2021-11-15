@@ -1,0 +1,425 @@
+---
+title: "MovieLens project_report"
+author: "Jody Iabichino"
+date: "15/11/2021"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(dslabs)) install.packages("dslabs", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(ggplot2)
+library(dslabs)
+
+```
+
+## 1. Introduction
+
+## 1.1 Overview 
+
+The project that we are describing is based on the dslabs dataset “movielens” that contains information about real-world movie ratings. In this dataset each row represents a unique rating given to a specified movie by a single user. 
+The aim of the project was to build a machine learning algorithm able to predicts the movie ratings with the lowest RMSE achievable. RMSE is a kind of loss function, a typical metric of "goodness of fit", that we had to minimize as much as possible. We can interpret RMSE similar to standard deviation.
+
+The steps followed in this analysis were essentially three.
+First of all, we built our dataset that after some preliminary analysis (such as data exploration and data cleaning) was splitted into two separate datasets, the “training set” (edx) and the “test set”(temp). 
+Then, a machine learning algorithm was created. In particular, four models were tested, which were very similar to each other and differed only in a few parameters. According to the rules of machine learning, the RMSE on the test set was determined for each of these.
+In the end, the model with the lowest RMSE was selected.
+
+## 2. Analysis
+
+## 2.1 Data exploration
+
+Before starting with the actual data exploration, the zipper file containing all the necessary data was downloaded:
+
+```{r download}
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+```
+
+The first file was “ratings.dat”, which was stored in the “ratings” dataset; the second file was “movies.dat”, which was stored in the “movies” dataset.
+
+```{r unzip, echo=FALSE}
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+```
+
+Of the two datasets, the first few rows were analyzed using the following code:
+
+```{r explore_1}
+head(ratings)
+head(movies)
+```
+
+Both datasets had a common key variable, “movieId”. This variable was used to create a single dataset “movielens”:
+
+```{r data}
+movielens <- left_join(ratings, movies, by = "movieId")
+```
+
+```{r data_detail_1, echo=FALSE}
+ncol_movielens <- ncol(movielens)
+nrow_movielens <- nrow(movielens)
+```
+
+Analyzing the content of `movielens`, it was possible to find that it had `r ncol_movielens` variables and `r nrow_movielens` rows.
+Also of this dataset, the first few rows were analyzed to understand the granularity of the data:
+
+```{r explore_2, message=FALSE}
+head(movielens)
+```
+
+```{r data_detail_2, echo=FALSE, message=FALSE}
+##users
+ml_users <- movielens %>%
+  group_by(userId) %>%
+  summarize(count=n())
+nrow_ml_users <- nrow(ml_users)
+top10_users_count <- movielens %>%
+  group_by(userId) %>%
+  summarize(count=n()) %>%
+  arrange(desc(count)) %>%
+  top_n(10)  %>% summarize(sum(count))  
+## movieId
+ml_movieid <- movielens %>%
+  group_by(movieId) %>%
+  summarize(count=n())
+nrow_ml_movieid <- nrow(ml_movieid)
+
+##genres
+ml_genres <- movielens %>%
+  group_by(genres) %>%
+  summarize(count=n())
+nrow_ml_genres <- nrow(ml_genres)
+```
+
+`Movielens` presents `r nrow_ml_users` distinct users. Each user gave one or more ratings to one or more movies and some of these users were more "active" than others. 
+We could see that the top 10 users based on number of ratings gave a total of `r top10_users_count` ratings:
+
+```{r users, echo=FALSE}
+movielens %>%
+  group_by(userId) %>%
+  summarize(count=n()) %>%
+  arrange(desc(count)) %>%
+  top_n(10)   
+```
+`Movielens` presents also `r nrow_ml_movieid` distincts "movieId". A movieId is a code which identifies each movie. 
+We found that the "title" variable could be used to enrich "movieId" with information.
+The top 10 movies based on absolute and relative count of ratings are shown here:
+
+```{r movieId_and_title, echo=FALSE, message=FALSE}
+movielens %>%
+  mutate(movieId_and_title = paste0(movieId,"_",title))%>%
+  group_by(movieId_and_title) %>%
+  summarize(count=n(), count_percentage = count / nrow_movielens) %>%
+  arrange(desc(count_percentage)) %>%
+  top_n(10)  
+```
+Each movie was classified by genre and the total number of distinct genres was `r nrow_ml_genres`.
+Genres could be described by a single word or by a combination of words.
+The top 10 genres in the database can be seen here, each followed by the absolute and relative count of its appearances:
+
+```{r genres, echo=FALSE}
+ml_genres%>%
+  mutate(count_percentage = count / nrow_movielens) %>%
+  arrange(desc(count_percentage)) %>%
+  top_n(10)
+```
+
+```{r data_detail_3, echo=FALSE, message=FALSE}
+##rating
+ml_rating <- movielens %>%
+  group_by(rating) %>%
+  summarize(count=n())
+nrow_ml_rating <- nrow(ml_rating)
+```
+Continuing with our analysis, we analized the target variable of the machine learning exercise: the rating. `movielens` had a total of `r nrow_ml_rating` possible ratings, which can be seen here, each followed by the count of appearances:
+
+```{r explore_3, echo=FALSE}
+ml_rating
+```
+
+A bar plot helped us to visualize how the ratings were distributed in the dataset:
+
+```{r data_plot_1, echo=FALSE}
+ggplot(data = ml_rating, aes(x = rating, y = count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label=paste0(round(count/nrow_movielens, 2)*100,"%"))) +
+  ggtitle("Bar plot of ratings") + 
+  ylab("relative frequency")
+```
+
+Looking at the numbers, we found that a half of total ratings were either "3" or "4"; non-integer ratings like "0.5" or "1.5" were not frequently used.
+
+## 2.2 Data cleaning 
+
+After the data exploration, we analized `movielens` to evaluate the quality of the dataset.
+Indeed, a common task in data analysis is dealing with missing values. In R, missing values are often represented by NA or some other value that represents missing values (i.e. 99). 
+Here we report the results of our analysis:
+
+```{r datacleansing, echo=TRUE}
+
+sum(is.na(movielens))
+```
+
+The results showed that movielens was an extremely clean dataset, with no missing values present. 
+
+
+## 2.3 Data partition
+
+Concluding data exploration and data cleaning, it was possible to split `movielens` into two distinct databases: the training set, named “edx”, and the test set, called “validation”, that was the 10% of `movielens` data:
+
+```{r partition, echo=TRUE}
+
+library(dslabs)
+  library(tidyverse)
+  library(caret)
+  set.seed(1)
+  test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE) 
+edx <- movielens[-test_index,] 
+temp <- movielens[test_index,] 
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+RMSE <- function(true_ratings, predicted_ratings){
+    sqrt(mean((true_ratings - predicted_ratings)^2))
+  }
+
+```
+It's important to highlight that through the "semi_join" function, we splitted movielens into two databases so that the users present into the training set were also present in the test set.
+We created also the RMSE function, useful to estimate the accuracy of our model.
+
+
+## 2.4 Modelling approach: the approach presented
+
+After the creation of the training set, “edx”, it was possible to start our modelling approach to estimate the variable “rating”.
+During the Harvard course, a step-by-step approach was presented, starting with a very simple model in which the same rating was assumed for all movies and users, with all differences explained by random variation.
+The model was as follows:
+                           y(u,i)= mu + E(u,i)
+                           
+Where mu was the average rating for all movies and all users (the least square estimate) and E represented the sampled independent errors.
+To improve the model, the term b(i) was then added to represent the average of the ratings for movie i, but also the term b(u) was added to account for what was the user-specific effect.
+To still improve the results, it was used regularization. Regularization constrains the total variability of the effect sizes by penalizing large estimates that come from small sample sizes,using a penalty term: lambda, a tuning parameter.
+
+## 2.5 Modelling approach: our approach
+
+To further improve the model, we decided to make two separate changes. First, we introduced a new parameter b_g, which would take into account the effect of genre.
+After that, we decided to modify mu. In fact, we started from the idea of not considering the simple average of the whole dataset, but to build a sort of weighted average, which would consider the average of all the ratings for each user, the average of all the ratings for each movie and the average of all the ratings for each genre. 
+To define the weight of each mean in the composition of mu, we used an iterative process. Four models were therefore constructed, each with a different set of weights. 
+We started from a situation in which the weights were the same for all three components of mu (model 1), and then gave greater weight to the average of the user ratings in the subsequent models.
+
+## 2.5.1 Model 1
+
+As already mentioned, in the first model we started with a situation where the three weights of mu all had the same value.
+To estimate instead the b's, it was minimized an equation which contained a penalty term: lambda, a tuning parameter.
+We therefore initially defined the value of lambda and the three weights, and then launched a code which, compared to the one presented in class, in addition to the introduction of the term b_g, had a different way of estimating the mean mu.
+
+```{r estimation, echo=TRUE}
+
+lambdas <- seq(0, 10, 0.25)
+ 
+  weight1<-0.33  
+  weight2<-0.33  
+  weight3<-0.33  
+
+  rmses <- sapply(lambdas, function(l){
+    mu1 <- edx %>% group_by(genres) %>%   
+      summarize(mu1=mean(rating))
+    mu2 <- edx %>% group_by(movieId) %>%  
+      summarize(mu2=mean(rating))
+    mu3 <- edx %>% group_by(userId) %>%   
+      summarize(mu3=mean(rating))
+    
+    mu <- edx %>% 
+      left_join(mu1, by = "genres") %>%
+      left_join(mu2, by = "movieId") %>%
+      left_join(mu3, by = "userId") %>%
+      mutate(mu=weight1*mu1+weight2*mu2+weight3*mu3)%>% 
+      select(genres, movieId, mu, mu1, mu2, mu3)
+    
+    edx2<- data.frame(edx, mu) 
+    
+    b_i <- edx2 %>%
+      group_by(movieId) %>%
+      summarize(b_i = sum(rating - mu)/(n()+l)) 
+    b_u <- edx2 %>% 
+      left_join(b_i, by="movieId") %>%
+      group_by(userId) %>%
+      summarize(b_u = sum(rating - b_i - mu)/(n()+l)) 
+        b_g <- edx2 %>% 
+      left_join(b_i, by="movieId") %>%
+      left_join(b_u, by="userId") %>%
+      group_by(genres) %>%
+      summarize(b_g = sum(rating - b_i - b_u - mu)/(n()+l)) 
+        
+    predicted_ratings <- 
+      validation %>% 
+      left_join(b_i, by = "movieId") %>%
+      left_join(b_u, by = "userId") %>%
+      left_join(b_g, by = "genres") %>%
+      left_join(mu1, by= "genres") %>%
+      left_join(mu2, by="movieId")%>%
+      left_join(mu3, by="userId")%>%
+      mutate(mu_t=weight1*mu1+weight2*mu2+weight3*mu3) 
+    
+  predicted_ratings2<-predicted_ratings %>% 
+      mutate(pred = mu_t + b_i + b_u + b_g) %>%
+      .$pred  
+  return(RMSE(predicted_ratings2, validation$rating))
+  })
+  
+```
+At this point, after calculating all possible RMSEs associated with the vector of lambdas, we looked for the lambda value at which the RMSE reaches its minimum value.
+
+
+```{r lambdagraph, echo=TRUE}
+qplot(lambdas, rmses)  
+  
+  lambda <- lambdas[which.min(rmses)]
+  lambda
+
+```
+So the lambda value at which the RMSE is lowest is 6.5. 
+We then relaunched the code by substituting the value 6.5 in place of the lambda vector.
+
+
+```{r estimation2, echo=TRUE}
+
+lambdas <- 6.5
+ 
+  weight1<-0.33  
+  weight2<-0.33  
+  weight3<-0.33  
+
+  rmses <- sapply(lambdas, function(l){
+    mu1 <- edx %>% group_by(genres) %>%   
+      summarize(mu1=mean(rating))
+    mu2 <- edx %>% group_by(movieId) %>%  
+      summarize(mu2=mean(rating))
+    mu3 <- edx %>% group_by(userId) %>%   
+      summarize(mu3=mean(rating))
+    
+    mu <- edx %>% 
+      left_join(mu1, by = "genres") %>%
+      left_join(mu2, by = "movieId") %>%
+      left_join(mu3, by = "userId") %>%
+      mutate(mu=weight1*mu1+weight2*mu2+weight3*mu3)%>% 
+      select(genres, movieId, mu, mu1, mu2, mu3)
+    
+    edx2<- data.frame(edx, mu) 
+    
+    b_i <- edx2 %>%
+      group_by(movieId) %>%
+      summarize(b_i = sum(rating - mu)/(n()+l)) 
+    b_u <- edx2 %>% 
+      left_join(b_i, by="movieId") %>%
+      group_by(userId) %>%
+      summarize(b_u = sum(rating - b_i - mu)/(n()+l)) 
+        b_g <- edx2 %>% 
+      left_join(b_i, by="movieId") %>%
+      left_join(b_u, by="userId") %>%
+      group_by(genres) %>%
+      summarize(b_g = sum(rating - b_i - b_u - mu)/(n()+l)) 
+        
+    predicted_ratings <- 
+      validation %>% 
+      left_join(b_i, by = "movieId") %>%
+      left_join(b_u, by = "userId") %>%
+      left_join(b_g, by = "genres") %>%
+      left_join(mu1, by= "genres") %>%
+      left_join(mu2, by="movieId")%>%
+      left_join(mu3, by="userId")%>%
+      mutate(mu_t=weight1*mu1+weight2*mu2+weight3*mu3) 
+    
+  predicted_ratings2<-predicted_ratings %>% 
+      mutate(pred = mu_t + b_i + b_u + b_g) %>%
+      .$pred  
+  return(RMSE(predicted_ratings2, validation$rating))
+  })
+  
+```
+In doing so, we obtained an RMSE value of `r rmses`.
+
+## 2.5.2 Other models
+
+In order to make as accurate a choice as possible of the weights constituting the mu average, we built three more models, identical in structure to the first, in which we tried to vary these weights. From model to model, we gave more and more weight to the average of the user's ratings, trying to see what happened to the RMSE. 
+This is the weight structure that was used:
+
+```{r optimalweight, echo=FALSE}
+
+mod<-c(1,2,3,4)
+mu1<-c(0.33,0.25,0.2,0.2)
+mu2<-c(0.33,0.35,0.35,0.3)
+mu3<-c(0.33,0.4,0.45,0.5)
+table1<-cbind(mod,mu1,mu2,mu3)
+
+```
+```{r optimalweight2, echo=FALSE}
+   knitr::kable(table1,col.names = c('Model','mu1', 'mu2', 'mu3'))
+
+```
+For each of the models, the same procedure was therefore carried out as for the first model, by first submitting the entire lambda vector and then searching for the values of the latter at which the RMSE reached its minimum value.
+Optimal lambda values and relative RMSEs follow:
+
+```{r lambdamin, echo=FALSE}
+
+mod1<-c(1,2,3,4)
+Lambdav<-c(6.5,6.75,6.75,6.25)
+RM<-c(0.8644893,0.8645668,0.8646413,0.8647332)
+table2<-cbind(mod1,Lambdav,RM)
+
+```
+```{r lambdamin2, echo=FALSE}
+   knitr::kable(table2,col.names = c('Model','Optimal_lambda','RMSE'))
+
+```
+
+## 3. Results
+
+The four models analysed produced four RMSE values. The best model, i.e. the one producing the lowest RMSE, was the first.
+
+## 4. Conclusion
+
+Model 1 produced appreciable results, with a really low RMSE. The idea of modifying the mean in particular seems to have made a positive contribution in terms of results.
+Clearly, the model could be further refined. 
+Among its limitations, for example, is how to choose the weights that make up mu. Four possible structures were tested in this analysis, but it is that clear that one could optimize the choice through an iterative process leading to the choice of the absolute best weights.
+Another limitation is that we have not considered principal component analysis, which could lead to an improvement and further lowering of the RMSE.
+On the other hand, regarding the rating prediction formula, the approach used was definitely a simplified approach, based on the average. The use of more refined prediction models, such as knn or random forest, was initially excluded already during the course lectures due to the high volatility of the y variable, the high number of predictors and the presence of null values.
+It would be interesting to see if by simplifying the database in some way, more refined rating prediction formulas could be applied, perhaps making use of ensembling to consider multiple methods.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
